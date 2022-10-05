@@ -16,6 +16,7 @@ uint8_t data[] = { 0xff, 0xff, 0xff, 0xff }; // all '1'
 CCS811 sensor;
 int current_co2ppm = 0;
 int current_tvocppb = 0;
+#define WAKE 23
 
 // webserver
 const char* ssid = "****";
@@ -91,6 +92,8 @@ void showDisplayIpaddress(IPAddress& ipaddr) {
 void setup() {
     Serial.begin(115200);
 
+    pinMode(WAKE, OUTPUT);
+    digitalWrite(WAKE, LOW);
     display.setBrightness(0x0f);
     while(sensor.begin() != 0){
         Serial.println("failed to init chip, please check if the chip connection is fine");
