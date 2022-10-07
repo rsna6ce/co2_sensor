@@ -23,6 +23,8 @@ const char* ssid = "****";
 const char* password = "****";
 WebServer server(80);
 String current_ipaddr = "";
+int wifi_status = WL_DISCONNECTED;
+#define WIFI_TIMEOUT 30
 #define INNER_LED 13
 
 
@@ -106,35 +108,37 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
     int blink_led = 0;
-    while (WiFi.status() != WL_CONNECTED) {
+    for (int i=0; (i<WIFI_TIMEOUT*2)&&(wifi_status!= WL_CONNECTED); i++) {
+        wifi_status = WiFi.status();
         delay(500);
         digitalWrite(INNER_LED, ((blink_led++)&1));
-        data[0] = (blink_led&1) << 4;
-        data[1] = (blink_led&1) << 4;
-        data[2] = (blink_led&1) << 4;
-        data[3] = (blink_led&1) << 4;
+        data[0] = (blink_led&1) << 6;
+        data[1] = (blink_led&1) << 6;
+        data[2] = (blink_led&1) << 6;
+        data[3] = (blink_led&1) << 6;
         display.setSegments(data);
         Serial.print(".");
     }
     digitalWrite(INNER_LED, LOW);
-    Serial.println("");
-    Serial.print("Connected to ");
-    Serial.println(ssid);
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    IPAddress ipaddr = WiFi.localIP();
-    current_ipaddr = ipaddr.toString();
-    showDisplayIpaddress(ipaddr);
-
-    if (MDNS.begin("esp32")) {
-        Serial.println("MDNS responder started");
+    if (wifi_status == WL_CONNECTED) {
+        Serial.println("");
+        Serial.print("Connected to ");
+        Serial.println(ssid);
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+        IPAddress ipaddr = WiFi.localIP();
+        current_ipaddr = ipaddr.toString();
+        showDisplayIpaddress(ipaddr);
+    
+        if (MDNS.begin("esp32")) {
+            Serial.println("MDNS responder started");
+        }
+    
+        server.on("/", handleRoot);
+        server.on("/monitoring",handleMonitoring);
+        server.onNotFound(handleNotFound);
+        server.begin();
     }
-
-    server.on("/", handleRoot);
-    server.on("/monitoring",handleMonitoring);
-    server.onNotFound(handleNotFound);
-    server.begin();
-
     xTaskCreatePinnedToCore(loop2, "loop2", 4096, NULL, 1, NULL, 0);
     Serial.println("setup finished.");
 }
@@ -164,6 +168,8 @@ void loop2(void * params) {
 }
 
 void loop() {
-    server.handleClient();
+    if (wifi_status==WL_CONNECTED) {
+        server.handleClient();
+    }
     delay(2);
 }
