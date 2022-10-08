@@ -11,6 +11,7 @@
 #define DIO 4
 TM1637Display display(CLK, DIO);
 uint8_t data[] = { 0xff, 0xff, 0xff, 0xff }; // all '1'
+int current_brightness = 0x08;
 
 //KS0457 keyestudio CCS811 Carbon Dioxide Air Quality Sensor
 CCS811 sensor;
@@ -96,7 +97,7 @@ void setup() {
 
     pinMode(WAKE, OUTPUT);
     digitalWrite(WAKE, LOW);
-    display.setBrightness(0x0f);
+    display.setBrightness(current_brightness);
     while(sensor.begin() != 0){
         Serial.println("failed to init chip, please check if the chip connection is fine");
         delay(1000);
@@ -163,6 +164,12 @@ void loop2(void * params) {
             data[2] = display.encodeDigit(0x0E);
             data[3] = display.encodeDigit(0x0E);
             display.setSegments(data);
+        }
+        int brightness = 0x08 + ((current_co2ppm-400) / 100);
+        brightness = min(0x0f, brightness);
+        if (brightness != current_brightness) {
+            current_brightness = brightness;
+            display.setBrightness(current_brightness);
         }
     }
 }
