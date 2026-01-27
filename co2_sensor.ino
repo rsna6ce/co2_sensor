@@ -3,76 +3,82 @@
 #include <WiFiClient.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
-#include <TM1637Display.h> //TM1637 by Avishay Orpaz ver1.2.0
-#include <CCS811.h>        //KS0457 keyestudio CCS811 Carbon Dioxide Air Quality Sensor
+#include <TM1637Display.h> // TM1637 by Avishay Orpaz ver1.2.0
 
-//TM1637 by Avishay Orpaz ver1.2.0
+// Sensirion SCD4x library
+#include <Wire.h>
+#include <SensirionI2cScd4x.h>
+
+// TM1637
 #define CLK 15
 #define DIO 4
 TM1637Display display(CLK, DIO);
-uint8_t data[] = { 0xff, 0xff, 0xff, 0xff }; // all '1'
-int current_brightness = 0x08;
+uint8_t data[] = { 0xff, 0xff, 0xff, 0xff };
 
-//KS0457 keyestudio CCS811 Carbon Dioxide Air Quality Sensor
-CCS811 sensor;
-int current_co2ppm = 0;
-int current_tvocppb = 0;
-#define WAKE 23
+// SCD4x sensor
+SensirionI2cScd4x scd4x;
 
 // webserver
-const char* ssid = "****";
-const char* password = "****";
 WebServer server(80);
 String current_ipaddr = "";
 int wifi_status = WL_DISCONNECTED;
 #define WIFI_TIMEOUT 30
 #define INNER_LED 13
 
+// Measured values
+int current_co2ppm = 0;
+float current_temperature = 0.0f;
+float current_humidity = 0.0f;
 
 void handleRoot() {
   digitalWrite(INNER_LED, 1);
   String json = "{ ";
   json += "\"co2_ppm\":" + String(current_co2ppm) + ", ";
-  json += "\"tvoc_ppb\":" + String(current_tvocppb) + " }";
+  json += "\"temperature_c\":" + String(current_temperature, 1) + ", ";
+  json += "\"humidity_pct\":" + String(current_humidity, 1);
+  json += " }";
   server.send(200, "text/plain", json);
   digitalWrite(INNER_LED, 0);
 }
 
 void handleMonitoring() {
-    String resHtml = 
-        "<!DOCTYPE html>\n"
-        "<html lang=\"en\">\n"
-        "  <head>\n"
-        "    <meta charset=\"utf-8\">\n"
-        "    <title> monitoring</title>\n"
-        "  </head>\n"
-        "  <body>\n"
-        "    <p id=\"co2_ppm\">co2_ppm</p>\n"
-        "    <p id=\"tvoc_ppb\">tvoc_ppb</p>\n"
-        "  </body>\n"
-        "  <script language=\"javascript\" type=\"text/javascript\">\n"
-        "  function update_loop() {\n"
-        "    var request = new XMLHttpRequest();\n"
-        "    request.open(\"GET\", \"http://" + current_ipaddr +
-        "/\", true);\n"
-        "    request.responseType = 'json';\n"
-        "    request.onload = function () {\n"
-        "        var data = this.response;\n"
-        "        document.getElementById(\"co2_ppm\").textContent = \"co2 : \" + data.co2_ppm + \"[ppm]\";\n"
-        "        document.getElementById(\"tvoc_ppb\").textContent = \"tvoc : \" + data.tvoc_ppb + \"[ppb]\";\n"
-        "        setTimeout(update_loop, 1000);\n"
-        "    };\n"
-        "    request.onerror = function () {\n"
-        "        document.getElementById(\"co2_ppm\").textContent = \"co2 : ??? [ppm]\";\n"
-        "        document.getElementById(\"tvoc_ppb\").textContent = \"tvoc : ??? [ppb]\";\n"
-        "        setTimeout(update_loop, 1000);\n"
-        "    };\n"
-        "    request.send();\n"
-        "  };\n"
-        "  window.onload = update_loop;\n"
-        "  </script>\n"
-        "</html>";
-    server.send(200, "text/HTML", resHtml);
+  String resHtml =
+    "<!DOCTYPE html>\n"
+    "<html lang=\"en\">\n"
+    "  <head>\n"
+    "    <meta charset=\"utf-8\">\n"
+    "    <title> monitoring</title>\n"
+    "  </head>\n"
+    "  <body>\n"
+    "    <p id=\"co2_ppm\">co2_ppm</p>\n"
+    "    <p id=\"temperature_c\">temperature</p>\n"
+    "    <p id=\"humidity_pct\">humidity</p>\n"
+    "  </body>\n"
+    "  <script language=\"javascript\" type=\"text/javascript\">\n"
+    "  function update_loop() {\n"
+    "    var request = new XMLHttpRequest();\n"
+    "    request.open(\"GET\", \"http://" + current_ipaddr +
+    "/\", true);\n"
+    "    request.responseType = 'json';\n"
+    "    request.onload = function () {\n"
+    "        var data = this.response;\n"
+    "        document.getElementById(\"co2_ppm\").textContent = \"CO₂ : \" + data.co2_ppm + \" ppm\";\n"
+    "        document.getElementById(\"temperature_c\").textContent = \"Temperature : \" + data.temperature_c.toFixed(1) + \" ℃\";\n"
+    "        document.getElementById(\"humidity_pct\").textContent = \"Humidity : \" + data.humidity_pct.toFixed(1) + \" %\";\n"
+    "        setTimeout(update_loop, 1000);\n"
+    "    };\n"
+    "    request.onerror = function () {\n"
+    "        document.getElementById(\"co2_ppm\").textContent = \"CO₂ : ??? ppm\";\n"
+    "        document.getElementById(\"temperature_c\").textContent = \"Temperature : ??? ℃\";\n"
+    "        document.getElementById(\"humidity_pct\").textContent = \"Humidity : ??? %\";\n"
+    "        setTimeout(update_loop, 1000);\n"
+    "    };\n"
+    "    request.send();\n"
+    "  };\n"
+    "  window.onload = update_loop;\n"
+    "  </script>\n"
+    "</html>";
+  server.send(200, "text/HTML", resHtml);
 }
 
 void handleNotFound() {
@@ -82,101 +88,233 @@ void handleNotFound() {
 }
 
 void showDisplayIpaddress(IPAddress& ipaddr) {
-    for (int i=0; i<4; i++) {
-        data[0] = display.encodeDigit((ipaddr[i] % 1000) / 100);
-        data[1] = display.encodeDigit((ipaddr[i] %  100) /  10);
-        data[2] = display.encodeDigit((ipaddr[i] %   10));
-        data[3] = (i<3 ? 0x40 : 0x00);
-        display.setSegments(data);
-        delay(3000);
-    }
+  for (int i = 0; i < 4; i++) {
+    data[0] = display.encodeDigit((ipaddr[i] % 1000) / 100);
+    data[1] = display.encodeDigit((ipaddr[i] % 100) / 10);
+    data[2] = display.encodeDigit((ipaddr[i] % 10));
+    data[3] = (i < 3 ? 0x40 : 0x00);
+    display.setSegments(data);
+    delay(3000);
+  }
+}
+
+String serial_input_sync(String msg) {
+  Serial.println(msg);
+  while (Serial.available() == 0) {}
+  Serial.setTimeout(60000);
+  String input_str = Serial.readStringUntil('\n');
+  Serial.setTimeout(1000);
+  input_str.trim();
+  return input_str;
 }
 
 void setup() {
-    Serial.begin(115200);
+  Serial.begin(115200);
 
-    pinMode(WAKE, OUTPUT);
-    digitalWrite(WAKE, LOW);
-    display.setBrightness(current_brightness);
-    while(sensor.begin() != 0){
-        Serial.println("failed to init chip, please check if the chip connection is fine");
-        delay(1000);
+  String ssid = "****";
+  String pass = "****";
+  Serial.println("To reset the SSID, press the 'y' key within 3 seconds.");
+  delay(3000);
+  if (Serial.available() > 0) {
+    int inbyte = Serial.read();
+    if (inbyte == 'y') {
+      ssid = "";
+      pass = "";
     }
-    sensor.setMeasCycle(sensor.eCycle_250ms);
+    String flush_str = Serial.readString(); // Flush remaining input
+  }
 
-    pinMode(INNER_LED, OUTPUT);
-    digitalWrite(INNER_LED, LOW);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    int blink_led = 0;
-    for (int i=0; (i<WIFI_TIMEOUT*2)&&(wifi_status!= WL_CONNECTED); i++) {
-        wifi_status = WiFi.status();
-        delay(500);
-        digitalWrite(INNER_LED, ((blink_led++)&1));
-        data[0] = (blink_led&1) << 6;
-        data[1] = (blink_led&1) << 6;
-        data[2] = (blink_led&1) << 6;
-        data[3] = (blink_led&1) << 6;
-        display.setSegments(data);
-        Serial.print(".");
+  bool new_ssid_pass = false;
+  if (ssid == "" || pass == "") {
+    while (true) {
+      Serial.println("Enter Wi-Fi settings: SSID and password.");
+      ssid = serial_input_sync("SSID?");
+      pass = serial_input_sync("Password?");
+      String confirm_msg = "SSID: " + ssid + "  Password: " + pass + "\r\n";
+      String yes_no = serial_input_sync(confirm_msg + "OK? (yes/no)");
+      if (yes_no == "yes" || yes_no == "y") {
+        new_ssid_pass = true;
+        break;
+      }
     }
-    digitalWrite(INNER_LED, LOW);
-    if (wifi_status == WL_CONNECTED) {
-        Serial.println("");
-        Serial.print("Connected to ");
-        Serial.println(ssid);
-        Serial.print("IP address: ");
-        Serial.println(WiFi.localIP());
-        IPAddress ipaddr = WiFi.localIP();
-        current_ipaddr = ipaddr.toString();
-        showDisplayIpaddress(ipaddr);
-    
-        if (MDNS.begin("esp32")) {
-            Serial.println("MDNS responder started");
-        }
-    
-        server.on("/", handleRoot);
-        server.on("/monitoring",handleMonitoring);
-        server.onNotFound(handleNotFound);
-        server.begin();
+  }
+
+  display.setBrightness(0x0f);
+
+  Wire.begin();  // ESP32 default I2C (SDA=21, SCL=22)
+
+  // SCD4x initialization (2 arguments: Wire + address)
+  scd4x.begin(Wire, 0x62);  // 0x62 is the standard I2C address for SCD40/41
+  Serial.println("SCD4x begin called.");
+
+  // Reset periodic measurement
+  uint16_t error = scd4x.stopPeriodicMeasurement();
+  if (error) {
+    Serial.print("stopPeriodicMeasurement failed: ");
+    Serial.println(error);
+  } else {
+    Serial.println("Stopped any previous measurement.");
+  }
+  delay(1200);  // Wait a bit
+
+  if (false) {
+    // Factory reset + FRC (for manual execution)
+    // calibration start
+    uint16_t correction_;
+    uint16_t FRC = 400; // FRC target value
+    Serial.println("calibration start");
+    scd4x.stopPeriodicMeasurement(); // Stop periodic measurement mode
+    delay(500);
+    scd4x.performFactoryReset();      // Reset settings to factory defaults
+    scd4x.startPeriodicMeasurement(); // Start periodic measurement mode
+    delay(3 * 60 * 1000);             // Run normally for 3 minutes
+    scd4x.stopPeriodicMeasurement();  // Stop periodic measurement mode
+    delay(500);
+    scd4x.performForcedRecalibration(FRC, correction_); // Execute FRC
+    delay(1000);                                        // Wait 1 second after FRC
+
+    // Restart normal measurement mode
+    while (scd4x.startPeriodicMeasurement() == false) {}
+    Serial.println("Completed."); // FRC completion message
+
+    Serial.printf("FRC. %d\n", correction_); // Display FRC correction value
+  }
+
+  if (false) {
+    // Atmospheric calibration (for manual execution)
+    uint16_t target_co2 = 400;
+    uint16_t correction = 0;
+    uint16_t frc_error = scd4x.performForcedRecalibration(target_co2, correction);
+    if (frc_error == 0) {
+      Serial.print("FRC command OK. Correction: ");
+      Serial.println(correction);
+      if (correction == 65535) {
+        Serial.println("FRC FAILED (0xFFFF) - check stable CO2 / wiring / delay");
+      } else {
+        Serial.println("FRC SUCCESS! (correction != 65535)");
+      }
+    } else {
+      Serial.print("FRC error code: ");
+      Serial.println(frc_error);
     }
-    xTaskCreatePinnedToCore(loop2, "loop2", 4096, NULL, 1, NULL, 0);
-    Serial.println("setup finished.");
+    delay(1200);  // Wait a bit
+  }
+
+  uint16_t asc_error = scd4x.setAutomaticSelfCalibrationEnabled(true);
+  if (asc_error == 0) {
+    Serial.println("ASC enabled (auto calibration)");
+  }
+
+  // Start periodic measurement
+  error = scd4x.startPeriodicMeasurement();
+  if (error) {
+    Serial.print("startPeriodicMeasurement failed: ");
+    Serial.println(error);
+  } else {
+    Serial.println("SCD40/41 periodic measurement started (5 sec interval)");
+  }
+
+  pinMode(INNER_LED, OUTPUT);
+  digitalWrite(INNER_LED, LOW);
+
+  WiFi.mode(WIFI_STA);
+  if (new_ssid_pass) {
+    WiFi.begin(ssid, pass);
+  } else {
+    WiFi.begin();
+  }
+  int blink_led = 0;
+  for (int i = 0; (i < WIFI_TIMEOUT * 2) && (wifi_status != WL_CONNECTED); i++) {
+    wifi_status = WiFi.status();
+    delay(500);
+    digitalWrite(INNER_LED, ((blink_led++) & 1));
+    data[0] = (blink_led & 1) << 6;
+    data[1] = (blink_led & 1) << 6;
+    data[2] = (blink_led & 1) << 6;
+    data[3] = (blink_led & 1) << 6;
+    display.setSegments(data);
+    Serial.print(".");
+  }
+  digitalWrite(INNER_LED, LOW);
+  if (wifi_status == WL_CONNECTED) {
+    Serial.println("");
+    Serial.print("Connected to ");
+    Serial.println(ssid);
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    IPAddress ipaddr = WiFi.localIP();
+    current_ipaddr = ipaddr.toString();
+    showDisplayIpaddress(ipaddr);
+
+    if (MDNS.begin("esp32")) {
+      Serial.println("MDNS responder started");
+    }
+
+    server.on("/", handleRoot);
+    server.on("/monitoring", handleMonitoring);
+    server.onNotFound(handleNotFound);
+    server.begin();
+  }
+  xTaskCreatePinnedToCore(loop2, "loop2", 4096, NULL, 1, NULL, 0);
+  Serial.println("setup finished.");
 }
 
 void loop2(void * params) {
-    while (true) {
-    delay(1000);
-        if(sensor.checkDataReady()){
-            current_co2ppm = sensor.getCO2PPM();
-            current_tvocppb = sensor.getTVOCPPB();
-            Serial.println(current_co2ppm);
-            data[0] = current_co2ppm >= 1000 ? display.encodeDigit((current_co2ppm / 1000)) : 0;
-            data[1] = display.encodeDigit((current_co2ppm % 1000) / 100);
-            data[2] = display.encodeDigit((current_co2ppm %  100) /  10);
-            data[3] = display.encodeDigit((current_co2ppm %   10));
-            display.setSegments(data);
-        } else {
-            current_co2ppm = -1;
-            current_tvocppb = -1;
-            data[0] = display.encodeDigit(0x0E);
-            data[1] = display.encodeDigit(0x0E | (1<<7));
-            data[2] = display.encodeDigit(0x0E);
-            data[3] = display.encodeDigit(0x0E);
-            display.setSegments(data);
-        }
-        int brightness = 0x08 + ((current_co2ppm-400) / 100);
-        brightness = min(0x0f, brightness);
-        if (brightness != current_brightness) {
-            current_brightness = brightness;
-            display.setBrightness(current_brightness);
-        }
+  while (true) {
+    delay(5500);  // 5 sec cycle + margin
+
+    uint16_t co2 = 0;
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+
+    uint16_t error = scd4x.readMeasurement(co2, temperature, humidity);
+
+    if (error) {
+      Serial.print("readMeasurement error: ");
+      Serial.println(error);
+      current_co2ppm = -1;
+      current_temperature = 0.0f;
+      current_humidity = 0.0f;
+      // Error display
+      data[0] = display.encodeDigit(0x0E);
+      data[1] = display.encodeDigit(0x0E | (1 << 7));
+      data[2] = display.encodeDigit(0x0E);
+      data[3] = display.encodeDigit(0x0E);
+      display.setSegments(data);
+    } else if (co2 == 0) {
+      // Invalid value right after measurement start
+      current_co2ppm = -1;
+      current_temperature = 0.0f;
+      current_humidity = 0.0f;
+      // Waiting display
+      data[0] = 0;
+      data[1] = 0;
+      data[2] = 0;
+      data[3] = 0;
+      display.setSegments(data);
+    } else {
+      current_co2ppm = co2;
+      current_temperature = temperature;
+      current_humidity = humidity;
+
+      Serial.print("CO2: "); Serial.print(co2);
+      Serial.print(" ppm  Temp: "); Serial.print(temperature, 1);
+      Serial.print(" C  Hum: "); Serial.print(humidity, 1);
+      Serial.println(" %");
+
+      // TM1637 display
+      data[0] = current_co2ppm >= 1000 ? display.encodeDigit((current_co2ppm / 1000)) : 0;
+      data[1] = display.encodeDigit((current_co2ppm % 1000) / 100);
+      data[2] = display.encodeDigit((current_co2ppm % 100) / 10);
+      data[3] = display.encodeDigit((current_co2ppm % 10));
+      display.setSegments(data);
     }
+  }
 }
 
 void loop() {
-    if (wifi_status==WL_CONNECTED) {
-        server.handleClient();
-    }
-    delay(2);
+  if (wifi_status == WL_CONNECTED) {
+    server.handleClient();
+  }
+  delay(2);
 }
