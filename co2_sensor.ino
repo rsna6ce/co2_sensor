@@ -4,6 +4,9 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <TM1637Display.h> // TM1637 by Avishay Orpaz ver1.2.0
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include "SPIFFSIni.h"
 
 // Sensirion SCD4x library
 #include <Wire.h>
@@ -29,6 +32,15 @@ int wifi_status = WL_DISCONNECTED;
 int current_co2ppm = 0;
 float current_temperature = 0.0f;
 float current_humidity = 0.0f;
+String current_gas_utl = "";
+
+uint64_t latest_millis_send_gas = 0;
+const uint64_t interval_send_gas = 60 * 1000;
+const String project_name = "co2_monitor";
+
+uint64_t latest_wifi_check = 30;
+const uint64_t interval_wifi_check = 60 * 1000;
+const uint64_t interval_wifi_reconnect = 30 * 1000;
 
 void handleRoot() {
   digitalWrite(INNER_LED, 1);
@@ -111,8 +123,13 @@ String serial_input_sync(String msg) {
 void setup() {
   Serial.begin(115200);
 
-  String ssid = "****";
-  String pass = "****";
+  // SPIFFS
+  SPIFFSIni config("/config.ini", true);
+
+  String ssid = config.read("ssid");
+  String pass = config.read("pass");
+  current_gas_utl = config.read("gas_url");
+
   Serial.println("To reset the SSID, press the 'y' key within 3 seconds.");
   delay(3000);
   if (Serial.available() > 0) {
@@ -120,6 +137,7 @@ void setup() {
     if (inbyte == 'y') {
       ssid = "";
       pass = "";
+      current_gas_utl = "";
     }
     String flush_str = Serial.readString(); // Flush remaining input
   }
@@ -130,10 +148,14 @@ void setup() {
       Serial.println("Enter Wi-Fi settings: SSID and password.");
       ssid = serial_input_sync("SSID?");
       pass = serial_input_sync("Password?");
+      current_gas_utl = serial_input_sync("GAS URL?");
       String confirm_msg = "SSID: " + ssid + "  Password: " + pass + "\r\n";
       String yes_no = serial_input_sync(confirm_msg + "OK? (yes/no)");
       if (yes_no == "yes" || yes_no == "y") {
         new_ssid_pass = true;
+        config.write("ssid", ssid);
+        config.write("pass", pass);
+        config.write("gas_url", current_gas_utl);
         break;
       }
     }
@@ -312,9 +334,88 @@ void loop2(void * params) {
   }
 }
 
+void sendDataToGAS(float value1, float value2, float value3) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected");
+    return;
+  }
+  if (current_gas_utl == "") {
+    // skip upload
+    return;
+  }
+
+  Serial.print("Using GAS URL: ");
+  Serial.println(current_gas_utl);
+
+  WiFiClientSecure client;
+  client.setInsecure();  // Skip certificate verification (for testing! Add root certs in production)
+
+  HTTPClient http;
+
+  if (!http.begin(client, current_gas_utl)) {
+    Serial.println("http.begin() failed - URL or connection issue");
+    return;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+
+  // JSON payload
+  String jsonPayload = "{"
+    "\"project_name\":\"" + project_name + "\","
+    "\"headers\":[\"co2\",\"temperature\",\"humidity\"],"
+    "\"datas\":[" + String(value1, 0) + "," + String(value2, 1) + "," + String(value3, 1) + "],"
+    "\"max_count\":1440"
+  "}";
+
+  Serial.println("Sending JSON:");
+  Serial.println(jsonPayload);
+
+  int httpResponseCode = http.POST(jsonPayload);
+
+  if (httpResponseCode > 0) {
+    Serial.print("HTTP Code: "); Serial.println(httpResponseCode);
+    if (httpResponseCode == 302 || httpResponseCode == 200) {
+      Serial.println("GAS upload successful (including redirects)");
+    } else {
+      Serial.println("Unexpected response code");
+    }
+  } else {
+    Serial.print("POST failed, error code: ");
+    Serial.println(httpResponseCode);
+    Serial.println(http.errorToString(httpResponseCode));  // Detailed error message
+  }
+
+  http.end();
+}
+
 void loop() {
+  uint64_t current_millis = millis();
   if (wifi_status == WL_CONNECTED) {
     server.handleClient();
+    if (latest_millis_send_gas + interval_send_gas < current_millis) {
+      latest_millis_send_gas = current_millis;
+      sendDataToGAS(current_co2ppm, current_temperature, current_humidity);
+    }
+  } else {
+    if (latest_wifi_check + interval_wifi_check < current_millis) {
+      latest_wifi_check = current_millis;
+      Serial.println("WiFi disconnected. Attempting to reconnect...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+
+      unsigned long startAttemptTime = millis();
+      while (WiFi.status() != WL_CONNECTED && 
+             millis() - startAttemptTime < interval_wifi_reconnect) {
+        delay(100);
+        Serial.print(".");
+      }
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi reconnected");
+        Serial.println(WiFi.localIP());
+      } else {
+        Serial.println("\nFailed to reconnect to WiFi");
+      }
+    }
   }
   delay(2);
 }
