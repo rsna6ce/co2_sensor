@@ -53,6 +53,15 @@ void handleRoot() {
   digitalWrite(INNER_LED, 0);
 }
 
+void handleReboot() {
+  digitalWrite(INNER_LED, 1);
+  String json = "{ ";
+  json += "\"reboot\":\"ok\"}";
+  server.send(200, "text/plain", json);
+  digitalWrite(INNER_LED, 0);
+  esp_restart();
+}
+
 void handleMonitoring() {
   String resHtml =
     "<!DOCTYPE html>\n"
@@ -179,12 +188,22 @@ void setup() {
   }
   delay(1200);  // Wait a bit
 
-  if (false) {
+  bool factory_reset = false;
+  Serial.println("To factory reset the scd4x, press the 'y' key within 3 seconds.");
+  delay(3000);
+  if (Serial.available() > 0) {
+    int inbyte = Serial.read();
+    if (inbyte == 'y') {
+      factory_reset = true;
+    }
+    String flush_str = Serial.readString(); // Flush remaining input
+  }
+  if (factory_reset) {
     // Factory reset + FRC (for manual execution)
     // calibration start
     uint16_t correction_;
     uint16_t FRC = 400; // FRC target value
-    Serial.println("calibration start");
+    Serial.println("calibration start ... please wait 3 minutes.");
     scd4x.stopPeriodicMeasurement(); // Stop periodic measurement mode
     delay(500);
     scd4x.performFactoryReset();      // Reset settings to factory defaults
@@ -222,7 +241,7 @@ void setup() {
     delay(1200);  // Wait a bit
   }
 
-  uint16_t asc_error = scd4x.setAutomaticSelfCalibrationEnabled(true);
+  uint16_t asc_error = scd4x.setAutomaticSelfCalibrationEnabled(false);
   if (asc_error == 0) {
     Serial.println("ASC enabled (auto calibration)");
   }
@@ -274,6 +293,7 @@ void setup() {
 
     server.on("/", handleRoot);
     server.on("/monitoring", handleMonitoring);
+    server.on("/reboot", handleReboot);
     server.onNotFound(handleNotFound);
     server.begin();
   }
