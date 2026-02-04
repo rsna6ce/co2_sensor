@@ -8,10 +8,10 @@
 | 3V3       | TM1637 | VCC |
 | D15       | TM1637 | CLK |
 | D4        | TM1637 | DIO |
-| GND       | SCD40  | GND |
-| 3V3       | SCD40  | VCC |
-| D21       | SCD40  | SDA |
-| D22       | SCD40  | SCL |
+| GND       | SCD30  | GND |
+| 3V3       | SCD30  | VCC |
+| D21       | SCD30  | SDA |
+| D22       | SCD30  | SCL |
 
 
 | TM1637 pin | device | pin |
@@ -22,7 +22,7 @@
 | DIO        | ESP32  | D4  |
 
 
-| SCD40 pin | device | pin |
+| SCD30 pin | device | pin |
 |-----------|--------|-----|
 | GND       | ESP32  | GND |
 | VCC       | ESP32  | 3V3 |

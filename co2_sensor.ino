@@ -8,9 +8,9 @@
 #include <WiFiClientSecure.h>
 #include "SPIFFSIni.h"
 
-// Sensirion SCD4x library
+// SparkFun SCD30 library (ZIP install from https://github.com/sparkfun/SparkFun_SCD30_Arduino_Library)
 #include <Wire.h>
-#include <SensirionI2cScd4x.h>
+#include <SparkFun_SCD30_Arduino_Library.h>
 
 // TM1637
 #define CLK 15
@@ -18,8 +18,8 @@
 TM1637Display display(CLK, DIO);
 uint8_t data[] = { 0xff, 0xff, 0xff, 0xff };
 
-// SCD4x sensor
-SensirionI2cScd4x scd4x;
+// SCD30 sensor
+SCD30 scd30;
 
 // webserver
 WebServer server(80);
@@ -134,7 +134,6 @@ void setup() {
 
   // SPIFFS
   SPIFFSIni config("/config.ini", true);
-
   String ssid = config.read("ssid");
   String pass = config.read("pass");
   current_gas_utl = config.read("gas_url");
@@ -174,85 +173,25 @@ void setup() {
 
   Wire.begin();  // ESP32 default I2C (SDA=21, SCL=22)
 
-  // SCD4x initialization (2 arguments: Wire + address)
-  scd4x.begin(Wire, 0x62);  // 0x62 is the standard I2C address for SCD40/41
-  Serial.println("SCD4x begin called.");
-
-  // Reset periodic measurement
-  uint16_t error = scd4x.stopPeriodicMeasurement();
-  if (error) {
-    Serial.print("stopPeriodicMeasurement failed: ");
-    Serial.println(error);
+  // SCD30 initialization
+  if (scd30.begin() == false) {
+    Serial.println("SCD30 not detected. Check wiring.");
   } else {
-    Serial.println("Stopped any previous measurement.");
-  }
-  delay(1200);  // Wait a bit
-
-  bool factory_reset = false;
-  Serial.println("To factory reset the scd4x, press the 'y' key within 3 seconds.");
-  delay(3000);
-  if (Serial.available() > 0) {
-    int inbyte = Serial.read();
-    if (inbyte == 'y') {
-      factory_reset = true;
-    }
-    String flush_str = Serial.readString(); // Flush remaining input
-  }
-  if (factory_reset) {
-    // Factory reset + FRC (for manual execution)
-    // calibration start
-    uint16_t correction_;
-    uint16_t FRC = 400; // FRC target value
-    Serial.println("calibration start ... please wait 3 minutes.");
-    scd4x.stopPeriodicMeasurement(); // Stop periodic measurement mode
-    delay(500);
-    scd4x.performFactoryReset();      // Reset settings to factory defaults
-    scd4x.startPeriodicMeasurement(); // Start periodic measurement mode
-    delay(3 * 60 * 1000);             // Run normally for 3 minutes
-    scd4x.stopPeriodicMeasurement();  // Stop periodic measurement mode
-    delay(500);
-    scd4x.performForcedRecalibration(FRC, correction_); // Execute FRC
-    delay(1000);                                        // Wait 1 second after FRC
-
-    // Restart normal measurement mode
-    while (scd4x.startPeriodicMeasurement() == false) {}
-    Serial.println("Completed."); // FRC completion message
-
-    Serial.printf("FRC. %d\n", correction_); // Display FRC correction value
+    Serial.println("SCD30 detected!");
   }
 
-  if (false) {
-    // Atmospheric calibration (for manual execution)
-    uint16_t target_co2 = 400;
-    uint16_t correction = 0;
-    uint16_t frc_error = scd4x.performForcedRecalibration(target_co2, correction);
-    if (frc_error == 0) {
-      Serial.print("FRC command OK. Correction: ");
-      Serial.println(correction);
-      if (correction == 65535) {
-        Serial.println("FRC FAILED (0xFFFF) - check stable CO2 / wiring / delay");
-      } else {
-        Serial.println("FRC SUCCESS! (correction != 65535)");
-      }
-    } else {
-      Serial.print("FRC error code: ");
-      Serial.println(frc_error);
-    }
-    delay(1200);  // Wait a bit
-  }
+  // Optional: Set measurement interval (default is 2 seconds)
+  scd30.setMeasurementInterval(5);  // 5 seconds (your loop2 delay is 5500ms)
 
-  uint16_t asc_error = scd4x.setAutomaticSelfCalibrationEnabled(false);
-  if (asc_error == 0) {
-    Serial.println("ASC enabled (auto calibration)");
-  }
+  // Disable ASC (as per your current setting)
+  scd30.setAutoSelfCalibration(true);
+  Serial.println("ASC enabled");
 
   // Start periodic measurement
-  error = scd4x.startPeriodicMeasurement();
-  if (error) {
-    Serial.print("startPeriodicMeasurement failed: ");
-    Serial.println(error);
+  if (scd30.beginMeasuring() == true) {
+    Serial.println("SCD30 periodic measurement started (5 sec interval)");
   } else {
-    Serial.println("SCD40/41 periodic measurement started (5 sec interval)");
+    Serial.println("Failed to start measurement");
   }
 
   pinMode(INNER_LED, OUTPUT);
@@ -305,15 +244,24 @@ void loop2(void * params) {
   while (true) {
     delay(5500);  // 5 sec cycle + margin
 
-    uint16_t co2 = 0;
-    float temperature = 0.0f;
-    float humidity = 0.0f;
+    if (scd30.dataAvailable()) {
+      current_co2ppm = scd30.getCO2();
+      current_temperature = scd30.getTemperature();
+      current_humidity = scd30.getHumidity();
 
-    uint16_t error = scd4x.readMeasurement(co2, temperature, humidity);
+      Serial.print("CO2: "); Serial.print(current_co2ppm);
+      Serial.print(" ppm  Temp: "); Serial.print(current_temperature, 1);
+      Serial.print(" C  Hum: "); Serial.print(current_humidity, 1);
+      Serial.println(" %");
 
-    if (error) {
-      Serial.print("readMeasurement error: ");
-      Serial.println(error);
+      // TM1637 display (CO2 only)
+      data[0] = current_co2ppm >= 1000 ? display.encodeDigit((current_co2ppm / 1000)) : 0;
+      data[1] = display.encodeDigit((current_co2ppm % 1000) / 100);
+      data[2] = display.encodeDigit((current_co2ppm % 100) / 10);
+      data[3] = display.encodeDigit((current_co2ppm % 10));
+      display.setSegments(data);
+    } else {
+      Serial.println("No new SCD30 data available");
       current_co2ppm = -1;
       current_temperature = 0.0f;
       current_humidity = 0.0f;
@@ -322,33 +270,6 @@ void loop2(void * params) {
       data[1] = display.encodeDigit(0x0E | (1 << 7));
       data[2] = display.encodeDigit(0x0E);
       data[3] = display.encodeDigit(0x0E);
-      display.setSegments(data);
-    } else if (co2 == 0) {
-      // Invalid value right after measurement start
-      current_co2ppm = -1;
-      current_temperature = 0.0f;
-      current_humidity = 0.0f;
-      // Waiting display
-      data[0] = 0;
-      data[1] = 0;
-      data[2] = 0;
-      data[3] = 0;
-      display.setSegments(data);
-    } else {
-      current_co2ppm = co2;
-      current_temperature = temperature;
-      current_humidity = humidity;
-
-      Serial.print("CO2: "); Serial.print(co2);
-      Serial.print(" ppm  Temp: "); Serial.print(temperature, 1);
-      Serial.print(" C  Hum: "); Serial.print(humidity, 1);
-      Serial.println(" %");
-
-      // TM1637 display
-      data[0] = current_co2ppm >= 1000 ? display.encodeDigit((current_co2ppm / 1000)) : 0;
-      data[1] = display.encodeDigit((current_co2ppm % 1000) / 100);
-      data[2] = display.encodeDigit((current_co2ppm % 100) / 10);
-      data[3] = display.encodeDigit((current_co2ppm % 10));
       display.setSegments(data);
     }
   }
