@@ -59,6 +59,8 @@ void handleReboot() {
   json += "\"reboot\":\"ok\"}";
   server.send(200, "text/plain", json);
   digitalWrite(INNER_LED, 0);
+  SPIFFSIni config("/config.ini", true);
+  config.write("recalibration", "1");
   esp_restart();
 }
 
@@ -186,6 +188,23 @@ void setup() {
   // Disable ASC (as per your current setting)
   scd30.setAutoSelfCalibration(true);
   Serial.println("ASC enabled");
+
+  String recalibration = config.read("recalibration");
+  if (recalibration == "1") {
+    for (int i=0; i<300; i++) {
+      int countdown = 300 - i;
+      data[0] = display.encodeDigit(0);
+      data[1] = display.encodeDigit((countdown % 1000) / 100);
+      data[2] = display.encodeDigit((countdown % 100) / 10);
+      data[3] = display.encodeDigit((countdown % 10));
+      display.setSegments(data);
+      delay(1000);
+    }
+    scd30.setForcedRecalibrationFactor(400);
+    delay(3000);
+    config.write("recalibration", "");
+  }
+
 
   // Start periodic measurement
   if (scd30.beginMeasuring() == true) {
