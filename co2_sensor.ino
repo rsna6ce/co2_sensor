@@ -21,6 +21,9 @@ uint8_t data[] = { 0xff, 0xff, 0xff, 0xff };
 // SCD4x sensor
 SensirionI2cScd4x scd4x;
 
+float calibration_bias = 0.0;
+float calibration_gain = 1.0;
+
 // webserver
 WebServer server(80);
 String current_ipaddr = "";
@@ -60,6 +63,37 @@ void handleReboot() {
   server.send(200, "text/plain", json);
   digitalWrite(INNER_LED, 0);
   esp_restart();
+}
+
+void handleCalibration() {
+  digitalWrite(INNER_LED, 1);
+  SPIFFSIni config("/config.ini", true);
+
+  // check exist and value
+  if (server.hasArg("gain") && server.arg("gain").length() > 0) {
+    String val = server.arg("gain");
+    if (isDigit(val[0]) || val[0] == '-' || val[0] == '.') {
+      calibration_gain = val.toFloat();
+      config.write("calibration_gain", val);
+    }
+  }
+
+  if (server.hasArg("bias") && server.arg("bias").length() > 0) {
+    String val = server.arg("bias");
+    if (isDigit(val[0]) || val[0] == '-' || val[0] == '.') {
+      calibration_bias = val.toFloat();
+      config.write("calibration_bias", val);
+    }
+  }
+
+  String json = "{ ";
+  json += "\"status\":\"OK\", ";
+  json += "\"calibration_gain\":" + String(calibration_gain, 3) + ", ";
+  json += "\"calibration_bias\":" + String(calibration_bias, 3);
+  json += " }";
+
+  server.send(200, "application/json", json);
+  digitalWrite(INNER_LED, 0);
 }
 
 void handleMonitoring() {
@@ -138,6 +172,8 @@ void setup() {
   String ssid = config.read("ssid");
   String pass = config.read("pass");
   current_gas_utl = config.read("gas_url");
+  if (config.exist("calibration_bias")) calibration_bias = config.read("calibration_bias").toFloat();
+  if (config.exist("calibration_gain")) calibration_gain = config.read("calibration_gain").toFloat();
 
   Serial.println("To reset the SSID, press the 'y' key within 3 seconds.");
   delay(3000);
@@ -294,6 +330,7 @@ void setup() {
     server.on("/", handleRoot);
     server.on("/monitoring", handleMonitoring);
     server.on("/reboot", handleReboot);
+    server.on("/calibration", handleCalibration);
     server.onNotFound(handleNotFound);
     server.begin();
   }
@@ -335,6 +372,9 @@ void loop2(void * params) {
       data[3] = 0;
       display.setSegments(data);
     } else {
+      // external parameter correction, gain and bias.
+      float calibrated_co2 = ((float)co2 * calibration_gain) + calibration_bias;
+      co2 = (uint16_t)(calibrated_co2 + 0.5);
       current_co2ppm = co2;
       current_temperature = temperature;
       current_humidity = humidity;
