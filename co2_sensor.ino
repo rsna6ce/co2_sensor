@@ -171,7 +171,7 @@ void setup() {
     }
   }
 
-  display.setBrightness(0x0f);
+  display.setBrightness(0x05);
 
   Wire.begin();  // ESP32 default I2C (SDA=21, SCL=22)
 
@@ -264,7 +264,11 @@ void loop2(void * params) {
     delay(5500);  // 5 sec cycle + margin
 
     if (scd30.dataAvailable()) {
-      current_co2ppm = scd30.getCO2();
+      int temp_co2ppm = scd30.getCO2();
+      if (temp_co2ppm < 400) {
+          temp_co2ppm = (int)((400.0f - (400.0f - (float)temp_co2ppm) / 3.0f) + 0.5f);
+      }
+      current_co2ppm = temp_co2ppm;
       current_temperature = scd30.getTemperature();
       current_humidity = scd30.getHumidity();
 
