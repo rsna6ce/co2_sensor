@@ -206,7 +206,7 @@ void setup() {
     }
   }
 
-  display.setBrightness(0x0f);
+  display.setBrightness(0x05);
 
   Wire.begin();  // ESP32 default I2C (SDA=21, SCL=22)
 
@@ -374,6 +374,10 @@ void loop2(void * params) {
     } else {
       // external parameter correction, gain and bias.
       float calibrated_co2 = ((float)co2 * calibration_gain) + calibration_bias;
+      // Lower limit correction 400ppm
+      if (calibrated_co2 < 400.0) {
+          calibrated_co2 = 400.0 - (400.0 - calibrated_co2) / 3.0;
+      }
       co2 = (uint16_t)(calibrated_co2 + 0.5);
       current_co2ppm = co2;
       current_temperature = temperature;
