@@ -24,6 +24,12 @@ SensirionI2cScd4x scd4x;
 float calibration_bias = 0.0;
 float calibration_gain = 1.0;
 
+// ファン制御関連（追加）
+const int FAN_CONTROL_PIN = 27;           // ← 任意のGPIOに変更可能
+int fancontrol_on  = 1500;                // ppm以上でファンON（LOW）
+int fancontrol_off = 1200;                // ppm以下でファンOFF（HIGH）
+int current_fancontrol = 0;               // 現在送信用（0 or 100）
+
 // webserver
 WebServer server(80);
 String current_ipaddr = "";
@@ -90,6 +96,41 @@ void handleCalibration() {
   json += "\"status\":\"OK\", ";
   json += "\"calibration_gain\":" + String(calibration_gain, 3) + ", ";
   json += "\"calibration_bias\":" + String(calibration_bias, 3);
+  json += " }";
+
+  server.send(200, "application/json", json);
+  digitalWrite(INNER_LED, 0);
+}
+
+// ファン制御設定用ハンドラ（新規追加）
+void handleFancontrol() {
+  digitalWrite(INNER_LED, 1);
+  SPIFFSIni config("/config.ini", true);
+
+  bool changed = false;
+
+  if (server.hasArg("on") && server.arg("on").length() > 0) {
+    String val = server.arg("on");
+    if (isDigit(val[0])) {
+      fancontrol_on = val.toInt();
+      config.write("fancontrol_on", String(fancontrol_on));
+      changed = true;
+    }
+  }
+
+  if (server.hasArg("off") && server.arg("off").length() > 0) {
+    String val = server.arg("off");
+    if (isDigit(val[0])) {
+      fancontrol_off = val.toInt();
+      config.write("fancontrol_off", String(fancontrol_off));
+      changed = true;
+    }
+  }
+
+  String json = "{ ";
+  json += "\"status\":\"ok\", ";
+  json += "\"fancontrol_on\":" + String(fancontrol_on) + ", ";
+  json += "\"fancontrol_off\":" + String(fancontrol_off);
   json += " }";
 
   server.send(200, "application/json", json);
@@ -174,6 +215,14 @@ void setup() {
   current_gas_utl = config.read("gas_url");
   if (config.exist("calibration_bias")) calibration_bias = config.read("calibration_bias").toFloat();
   if (config.exist("calibration_gain")) calibration_gain = config.read("calibration_gain").toFloat();
+
+  // ファン制御閾値の読み込み（追加）
+  if (config.exist("fancontrol_on")) {
+    fancontrol_on = config.read("fancontrol_on").toInt();
+  }
+  if (config.exist("fancontrol_off")) {
+    fancontrol_off = config.read("fancontrol_off").toInt();
+  }
 
   Serial.println("To reset the SSID, press the 'y' key within 3 seconds.");
   delay(3000);
@@ -279,7 +328,7 @@ void setup() {
 
   uint16_t asc_error = scd4x.setAutomaticSelfCalibrationEnabled(false);
   if (asc_error == 0) {
-    Serial.println("ASC enabled (auto calibration)");
+    Serial.println("ASC disabled (auto calibration off)");
   }
 
   // Start periodic measurement
@@ -293,6 +342,10 @@ void setup() {
 
   pinMode(INNER_LED, OUTPUT);
   digitalWrite(INNER_LED, LOW);
+
+  // ファン制御ピンの初期化（追加）
+  pinMode(FAN_CONTROL_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(FAN_CONTROL_PIN, HIGH);  // 初期：オープン（ファンOFF）
 
   WiFi.mode(WIFI_STA);
   if (new_ssid_pass) {
@@ -331,6 +384,7 @@ void setup() {
     server.on("/monitoring", handleMonitoring);
     server.on("/reboot", handleReboot);
     server.on("/calibration", handleCalibration);
+    server.on("/fancontrol", handleFancontrol);     // ← 追加
     server.onNotFound(handleNotFound);
     server.begin();
   }
@@ -394,11 +448,22 @@ void loop2(void * params) {
       data[2] = display.encodeDigit((current_co2ppm % 100) / 10);
       data[3] = display.encodeDigit((current_co2ppm % 10));
       display.setSegments(data);
+
+      // ファン制御ロジック（追加）
+      if (current_co2ppm >= fancontrol_on) {
+        digitalWrite(FAN_CONTROL_PIN, LOW);   // ファンON
+        current_fancontrol = 100;
+      }
+      else if (current_co2ppm <= fancontrol_off) {
+        digitalWrite(FAN_CONTROL_PIN, HIGH);  // ファンOFF
+        current_fancontrol = 0;
+      }
+      // 中間は前状態維持（ヒステリシス効果）
     }
   }
 }
 
-void sendDataToGAS(float value1, float value2, float value3) {
+void sendDataToGAS(float value1, float value2, float value3, int value4) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected");
     return;
@@ -426,8 +491,13 @@ void sendDataToGAS(float value1, float value2, float value3) {
   // JSON payload
   String jsonPayload = "{"
     "\"project_name\":\"" + project_name + "\","
-    "\"headers\":[\"co2\",\"temperature\",\"humidity\"],"
-    "\"datas\":[" + String(value1, 0) + "," + String(value2, 1) + "," + String(value3, 1) + "],"
+    "\"headers\":[\"co2\",\"temperature\",\"humidity\",\"fan\"],"
+    "\"datas\":[" 
+      + String(value1, 0) + "," 
+      + String(value2, 1) + "," 
+      + String(value3, 1) + ","
+      + String(value4) + 
+    "],"
     "\"max_count\":1440"
   "}";
 
@@ -458,7 +528,7 @@ void loop() {
     server.handleClient();
     if (latest_millis_send_gas + interval_send_gas < current_millis) {
       latest_millis_send_gas = current_millis;
-      sendDataToGAS(current_co2ppm, current_temperature, current_humidity);
+      sendDataToGAS(current_co2ppm, current_temperature, current_humidity, current_fancontrol);
     }
   } else {
     if (latest_wifi_check + interval_wifi_check < current_millis) {
