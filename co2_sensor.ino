@@ -211,6 +211,12 @@ void setup() {
   // SPIFFS
   SPIFFSIni config("/config.ini", true);
 
+  // ファン制御ピンの初期化（追加）
+  pinMode(FAN_CONTROL_PIN1, OUTPUT_OPEN_DRAIN);
+  pinMode(FAN_CONTROL_PIN2, OUTPUT_OPEN_DRAIN);
+  digitalWrite(FAN_CONTROL_PIN1, LOW);   // 初期：クローズ（ファン OFF）
+  digitalWrite(FAN_CONTROL_PIN2, HIGH);  // 初期：オープン（LED OFF）
+
   String ssid = config.read("ssid");
   String pass = config.read("pass");
   current_gas_utl = config.read("gas_url");
@@ -343,12 +349,6 @@ void setup() {
 
   pinMode(INNER_LED, OUTPUT);
   digitalWrite(INNER_LED, LOW);
-
-  // ファン制御ピンの初期化（追加）
-  pinMode(FAN_CONTROL_PIN1, OUTPUT_OPEN_DRAIN);
-  pinMode(FAN_CONTROL_PIN2, OUTPUT_OPEN_DRAIN);
-  digitalWrite(FAN_CONTROL_PIN1, LOW);   // 初期：クローズ（ファン OFF）
-  digitalWrite(FAN_CONTROL_PIN2, HIGH);  // 初期：オープン（LED OFF）
 
   WiFi.mode(WIFI_STA);
   if (new_ssid_pass) {
