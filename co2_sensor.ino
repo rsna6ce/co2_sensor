@@ -25,7 +25,8 @@ float calibration_bias = 0.0;
 float calibration_gain = 1.0;
 
 // ファン制御関連（追加）
-const int FAN_CONTROL_PIN = 27;           // ← 任意のGPIOに変更可能
+const int FAN_CONTROL_PIN1 = 18;           // fan pwm | led indicator
+const int FAN_CONTROL_PIN2 = 19;           // fan pwm | led indicator
 int fancontrol_on  = 1500;                // ppm以上でファンON（LOW）
 int fancontrol_off = 1200;                // ppm以下でファンOFF（HIGH）
 int current_fancontrol = 0;               // 現在送信用（0 or 100）
@@ -344,8 +345,10 @@ void setup() {
   digitalWrite(INNER_LED, LOW);
 
   // ファン制御ピンの初期化（追加）
-  pinMode(FAN_CONTROL_PIN, OUTPUT_OPEN_DRAIN);
-  digitalWrite(FAN_CONTROL_PIN, HIGH);  // 初期：オープン（ファンOFF）
+  pinMode(FAN_CONTROL_PIN1, OUTPUT_OPEN_DRAIN);
+  pinMode(FAN_CONTROL_PIN2, OUTPUT_OPEN_DRAIN);
+  digitalWrite(FAN_CONTROL_PIN1, LOW);   // 初期：クローズ（ファン OFF）
+  digitalWrite(FAN_CONTROL_PIN2, HIGH);  // 初期：オープン（LED OFF）
 
   WiFi.mode(WIFI_STA);
   if (new_ssid_pass) {
@@ -451,11 +454,13 @@ void loop2(void * params) {
 
       // ファン制御ロジック（追加）
       if (current_co2ppm >= fancontrol_on) {
-        digitalWrite(FAN_CONTROL_PIN, LOW);   // ファンON
+        digitalWrite(FAN_CONTROL_PIN1, HIGH);  // ファン ON
+        digitalWrite(FAN_CONTROL_PIN2, LOW);   // LED ON
         current_fancontrol = 100;
       }
       else if (current_co2ppm <= fancontrol_off) {
-        digitalWrite(FAN_CONTROL_PIN, HIGH);  // ファンOFF
+        digitalWrite(FAN_CONTROL_PIN1, LOW);   // ファン OFF
+        digitalWrite(FAN_CONTROL_PIN2, HIGH);  // LED OFF
         current_fancontrol = 0;
       }
       // 中間は前状態維持（ヒステリシス効果）
