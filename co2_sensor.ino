@@ -212,9 +212,9 @@ void setup() {
   SPIFFSIni config("/config.ini", true);
 
   // ファン制御ピンの初期化（追加）
-  pinMode(FAN_CONTROL_PIN1, OUTPUT_OPEN_DRAIN);
+  pinMode(FAN_CONTROL_PIN1, OUTPUT);
   pinMode(FAN_CONTROL_PIN2, OUTPUT_OPEN_DRAIN);
-  digitalWrite(FAN_CONTROL_PIN1, LOW);   // 初期：クローズ（ファン OFF）
+  digitalWrite(FAN_CONTROL_PIN1, LOW);   // 初期：LOW（ファン OFF）
   digitalWrite(FAN_CONTROL_PIN2, HIGH);  // 初期：オープン（LED OFF）
 
   String ssid = config.read("ssid");
