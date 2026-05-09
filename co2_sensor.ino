@@ -12,6 +12,13 @@
 #include <Wire.h>
 #include <SensirionI2cScd4x.h>
 
+// ==================== AI換気扇用追加 ====================
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <ArduinoJson.h>
+#include <time.h>
+// =======================================================
+
 // TM1637
 #define CLK 15
 #define DIO 4
@@ -51,6 +58,26 @@ const String project_name = "co2_monitor";
 uint64_t latest_wifi_check = 30;
 const uint64_t interval_wifi_check = 60 * 1000;
 const uint64_t interval_wifi_reconnect = 30 * 1000;
+
+const int PIN_SW=0; //onboard switch
+bool buttonPressed = false;
+
+// ==================== AI換気扇 追加 ====================
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "ntp.nict.jp", 9 * 3600, 60000);
+
+String gemini_key    = "";
+String gas_id       = "";
+String secret_token = "";
+String mail_to      = "";
+
+String lastSentDate = "";
+TaskHandle_t aiTaskHandle = NULL;
+
+// 新規追加：ファン稼働率積分
+long fanIntegral = 0;      // 累積値（0 or 100）
+int  fanSampleCount = 0;   // サンプル回数
+// =======================================================
 
 void handleRoot() {
   digitalWrite(INNER_LED, 1);
@@ -138,6 +165,47 @@ void handleFancontrol() {
   digitalWrite(INNER_LED, 0);
 }
 
+// ==================== 新規追加：AIパラメータ設定ハンドラ ====================
+void handleAiParam() {
+  digitalWrite(INNER_LED, 1);
+  SPIFFSIni config("/config.ini", true);
+
+  bool changed = false;
+
+  if (server.hasArg("gemini_key") && server.arg("gemini_key").length() > 0) {
+    gemini_key = server.arg("gemini_key");
+    config.write("gemini_key", gemini_key);
+    changed = true;
+  }
+  if (server.hasArg("gas_id") && server.arg("gas_id").length() > 0) {
+    gas_id = server.arg("gas_id");
+    config.write("gas_id", gas_id);
+    changed = true;
+  }
+  if (server.hasArg("secret_token") && server.arg("secret_token").length() > 0) {
+    secret_token = server.arg("secret_token");
+    config.write("secret_token", secret_token);
+    changed = true;
+  }
+  if (server.hasArg("mail_to") && server.arg("mail_to").length() > 0) {
+    mail_to = server.arg("mail_to");
+    config.write("mail_to", mail_to);
+    changed = true;
+  }
+
+  String json = "{ ";
+  json += "\"status\":\"OK\", ";
+  json += "\"gemini_key\":\"" + gemini_key + "\", ";
+  json += "\"gas_id\":\"" + gas_id + "\", ";
+  json += "\"secret_token\":\"" + secret_token + "\", ";
+  json += "\"mail_to\":\"" + mail_to + "\"";
+  json += " }";
+
+  server.send(200, "application/json", json);
+  digitalWrite(INNER_LED, 0);
+}
+// =======================================================
+
 void handleMonitoring() {
   String resHtml =
     "<!DOCTYPE html>\n"
@@ -205,6 +273,134 @@ String serial_input_sync(String msg) {
   return input_str;
 }
 
+// ====================== AI換気扇 関数 ======================
+void aiTask(void *pvParameters) {
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    Serial.println("=== [AI換気扇] AI問い合わせ開始 ===");
+    
+    // 推定作業時間計算
+    float fanRate = (fanSampleCount > 0) ? (float)fanIntegral / (float)fanSampleCount / 100.0f : 0.0f;
+    float measuredHours = (float)fanSampleCount / 60.0f;                    // 測定した時間（時間単位）
+    float estimatedHours = fanRate * 1.25f * measuredHours;                // 補正後推定作業時間
+    Serial.printf("[AI換気扇] ファン稼働率: %.1f%% → 推定作業時間: %.1f時間\n", fanRate * 100, estimatedHours);
+    String workMessage = "ファン稼働率: " + String(fanRate * 100, 1) + "→ 推定作業時間: " + String(estimatedHours, 1) + "時間\n";
+
+    String aiMessage = getGeminiMessage(estimatedHours);
+
+    if (aiMessage.length() > 0) {
+      Serial.println("取得メッセージ: " + aiMessage);
+      Serial.println("=== [AI換気扇] メール送信開始 ===");
+      sendEmailViaGAS(workMessage + aiMessage);
+      // 時間と統計をリセット
+      timeClient.update();
+      time_t now = timeClient.getEpochTime();
+      struct tm timeinfo;
+      localtime_r(&now, &timeinfo);
+      char dateStr[11];
+      strftime(dateStr, sizeof(dateStr), "%Y/%m/%d", &timeinfo);
+      String today = String(dateStr);
+
+      lastSentDate = today;
+      fanSampleCount = 0;
+      fanIntegral = 0;
+    } else {
+      Serial.println("[AI換気扇] AIメッセージ取得失敗");
+    }
+  }
+}
+
+String getGeminiMessage(float estimatedHours) {
+  if (gemini_key == "") {
+    Serial.println("[Gemini] gemini_keyが設定されていません");
+    return "";
+  }
+
+  String prompt = "今日の推定作業時間は約" + String(estimatedHours, 1) + "時間でした。";
+
+  if (estimatedHours >= 8.0) {
+    prompt += "今日は特にたくさん作業したみたい。";
+  } else if (estimatedHours >= 4.0) {
+    prompt += "今日はしっかり作業したみたい。";
+  } else {
+    prompt += "今日はゆったり過ごせたみたい。";
+  }
+
+  prompt += "温かくて短い一言メッセージを日本語で50文字程度で作ってください。";
+
+  int timeout_ms = 45000;
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(timeout_ms);
+
+  HTTPClient http;
+  String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + gemini_key;
+  //String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + gemini_key;
+  
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(timeout_ms);
+
+  String payload = "{"
+    "\"contents\": [{\"parts\":[{\"text\":\"" + prompt + "\"}]}],"
+    "\"generationConfig\": {\"maxOutputTokens\": 1024, \"temperature\": 0.85}"
+  "}";
+  Serial.println(payload);
+
+  int httpCode = http.POST(payload);
+  String result = "";
+
+  if (httpCode == 200) {
+    String response = http.getString();
+    JsonDocument doc;
+    if (deserializeJson(doc, response) == DeserializationError::Ok) {
+      result = doc["candidates"][0]["content"]["parts"][0]["text"].as<String>();
+    }
+  } else {
+    Serial.printf("[Gemini] HTTPエラー: %d\n", httpCode);
+  }
+  http.end();
+  return result;
+}
+
+bool sendEmailViaGAS(const String& message) {
+  if (gas_id == "" || secret_token == "" || mail_to == "") {
+    Serial.println("[GAS] メール送信パラメータが不足しています");
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  String gas_url = "https://script.google.com/macros/s/" + gas_id + "/exec";
+
+  HTTPClient http;
+  http.begin(client, gas_url);
+  http.addHeader("Content-Type", "application/json");
+
+  JsonDocument payloadDoc;
+  payloadDoc["_token"] = secret_token;
+  payloadDoc["_mailaddress"] = mail_to;
+  payloadDoc["_mailtitle"] = "【AI換気扇】今日のメッセージ";
+  payloadDoc["_mailmessage"] = message;
+
+  String payloadStr;
+  serializeJson(payloadDoc, payloadStr);
+
+  int httpCode = http.POST(payloadStr);
+  http.end();
+
+  if (httpCode == 200 || httpCode == 301 || httpCode == 302) {
+    Serial.println("[AI換気扇] メール送信成功！");
+    return true;
+  } else {
+    Serial.printf("[AI換気扇] メール送信失敗: %d\n", httpCode);
+    return false;
+  }
+}
+// =======================================================
+
 void setup() {
   Serial.begin(115200);
 
@@ -216,20 +412,28 @@ void setup() {
   pinMode(FAN_CONTROL_PIN2, OUTPUT_OPEN_DRAIN);
   digitalWrite(FAN_CONTROL_PIN1, LOW);   // 初期：LOW（ファン OFF）
   digitalWrite(FAN_CONTROL_PIN2, HIGH);  // 初期：オープン（LED OFF）
+  pinMode(PIN_SW, INPUT_PULLUP);
 
   String ssid = config.read("ssid");
   String pass = config.read("pass");
   current_gas_utl = config.read("gas_url");
+
   if (config.exist("calibration_bias")) calibration_bias = config.read("calibration_bias").toFloat();
   if (config.exist("calibration_gain")) calibration_gain = config.read("calibration_gain").toFloat();
 
-  // ファン制御閾値の読み込み（追加）
   if (config.exist("fancontrol_on")) {
     fancontrol_on = config.read("fancontrol_on").toInt();
   }
   if (config.exist("fancontrol_off")) {
     fancontrol_off = config.read("fancontrol_off").toInt();
   }
+
+  // ==================== AIパラメータ読み込み ====================
+  if (config.exist("gemini_key")) gemini_key = config.read("gemini_key");
+  if (config.exist("gas_id")) gas_id = config.read("gas_id");
+  if (config.exist("secret_token")) secret_token = config.read("secret_token");
+  if (config.exist("mail_to")) mail_to = config.read("mail_to");
+  // =======================================================
 
   Serial.println("To reset the SSID, press the 'y' key within 3 seconds.");
   delay(3000);
@@ -387,11 +591,30 @@ void setup() {
     server.on("/monitoring", handleMonitoring);
     server.on("/reboot", handleReboot);
     server.on("/calibration", handleCalibration);
-    server.on("/fancontrol", handleFancontrol);     // ← 追加
+    server.on("/fancontrol", handleFancontrol);
+    server.on("/aiparam", handleAiParam);
     server.onNotFound(handleNotFound);
     server.begin();
   }
   xTaskCreatePinnedToCore(loop2, "loop2", 4096, NULL, 1, NULL, 0);
+
+  // ==================== AI換気扇 初期化 ====================
+  timeClient.begin();
+  timeClient.update();
+  
+  time_t now = timeClient.getEpochTime();
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+  char dateStr[11];
+  strftime(dateStr, sizeof(dateStr), "%Y/%m/%d", &timeinfo);
+  lastSentDate = String(dateStr);
+  
+  Serial.println("[AI換気扇] 最終送信日初期化: " + lastSentDate);
+
+  xTaskCreatePinnedToCore(aiTask, "AI_Task", 8192, NULL, 1, &aiTaskHandle, 1);
+  Serial.println("[AI換気扇] AI Task created.");
+  // =======================================================
+
   Serial.println("setup finished.");
 }
 
@@ -534,7 +757,41 @@ void loop() {
     if (latest_millis_send_gas + interval_send_gas < current_millis) {
       latest_millis_send_gas = current_millis;
       sendDataToGAS(current_co2ppm, current_temperature, current_humidity, current_fancontrol);
+
+      fanIntegral += current_fancontrol;
+      fanSampleCount++;
+
+      // ==================== AI換気扇 日付チェック ====================
+      timeClient.update();
+      time_t now = timeClient.getEpochTime();
+      struct tm timeinfo;
+      localtime_r(&now, &timeinfo);
+      char dateStr[11];
+      strftime(dateStr, sizeof(dateStr), "%Y/%m/%d", &timeinfo);
+      String today = String(dateStr);
+
+      if (today != lastSentDate) {
+        Serial.println("[AI換気扇] 日付が変わりました → AIタスク起動");
+        if (aiTaskHandle) {
+          xTaskNotifyGive(aiTaskHandle);
+        }
+      }
+      // ========================================================
     }
+    // debug ========================================================
+    if (digitalRead(PIN_SW) == LOW && !buttonPressed) {
+      delay(50);
+      if (digitalRead(PIN_SW) == LOW) {
+        buttonPressed = true;
+        if (aiTaskHandle) {
+          xTaskNotifyGive(aiTaskHandle);
+        }
+      }
+    }
+    if (digitalRead(PIN_SW) == HIGH) {
+      buttonPressed = false;
+    }
+    // ========================================================
   } else {
     if (latest_wifi_check + interval_wifi_check < current_millis) {
       latest_wifi_check = current_millis;
