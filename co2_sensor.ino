@@ -364,6 +364,7 @@ String getGeminiMessage(float estimatedHours) {
   return result;
 }
 
+// https://github.com/rsna6ce/mail_sender_gas を使用してメール送信する
 bool sendEmailViaGAS(const String& message) {
   if (gas_id == "" || secret_token == "" || mail_to == "") {
     Serial.println("[GAS] メール送信パラメータが不足しています");
@@ -691,6 +692,7 @@ void loop2(void * params) {
   }
 }
 
+// https://github.com/rsna6ce/post_data_gas を使用してデータをアップロードする
 void sendDataToGAS(float value1, float value2, float value3, int value4) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected");
