@@ -467,7 +467,7 @@ void setup() {
     }
   }
 
-  display.setBrightness(0x05);
+  display.setBrightness(0x02);
 
   Wire.begin();  // ESP32 default I2C (SDA=21, SCL=22)
 
