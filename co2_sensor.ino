@@ -283,7 +283,7 @@ void aiTask(void *pvParameters) {
     // 推定作業時間計算
     float fanRate = (fanSampleCount > 0) ? (float)fanIntegral / (float)fanSampleCount / 100.0f : 0.0f;
     float measuredHours = (float)fanSampleCount / 60.0f;                    // 測定した時間（時間単位）
-    float estimatedHours = fanRate * 1.25f * measuredHours;                // 補正後推定作業時間
+    float estimatedHours = fanRate * 1.1f * measuredHours;                // 補正後推定作業時間
     Serial.printf("[AI換気扇] ファン稼働率: %.1f%% → 推定作業時間: %.1f時間\n", fanRate * 100, estimatedHours);
     String workMessage = "ファン稼働率: " + String(fanRate * 100, 1) + "→ 推定作業時間: " + String(estimatedHours, 1) + "時間\n";
 
@@ -320,14 +320,14 @@ String getGeminiMessage(float estimatedHours) {
   String prompt = "今日の推定作業時間は約" + String(estimatedHours, 1) + "時間でした。";
 
   if (estimatedHours >= 8.0) {
-    prompt += "今日は特にたくさん作業したみたい。";
+    prompt += "今日は特にたくさん作業しました。";
   } else if (estimatedHours >= 4.0) {
-    prompt += "今日はしっかり作業したみたい。";
+    prompt += "今日はしっかり作業しました。";
   } else {
-    prompt += "今日はゆったり過ごせたみたい。";
+    prompt += "今日はゆったり過ごせました。";
   }
 
-  prompt += "温かくて短い一言メッセージを日本語で50文字程度で作ってください。";
+  prompt += "温かくて短い一言メッセージを日本語で50文字程度で一つ作って、メッセージだけを出力してください。";
 
   int timeout_ms = 45000;
   WiFiClientSecure client;
