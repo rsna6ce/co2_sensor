@@ -1,5 +1,7 @@
 # co2_sensor
 
+![image](image/thumb_github.png)
+
 ## Device
 * ESP32
   * DOIT ESP32 DEVKIT V1
